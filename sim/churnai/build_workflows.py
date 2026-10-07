@@ -138,7 +138,8 @@ def connect():
               '"analytics":{"provider":"posthog","connection_ref":"acme_posthog"}}. '
               "Billing: stripe|paddle|chargebee|dodo_payments. Analytics: amplitude|mixpanel|posthog. "
               "CRM: hubspot|salesforce|pipedrive|attio. Support: zendesk|intercom|freshdesk|helpscout. "
-              "connection_ref is an opaque id the connector gateway resolves from its secrets store; never a raw credential.")])
+              "connection_ref is an opaque id the connector gateway resolves from its secrets store; never a raw credential. "
+              "Customers normally connect through the gateway (sim/churnai/gateway: connect_provider), which creates these refs.")])
     g.fn("Validate Request", 360, 0, SAFE_ID + """
 const tenant = <start.tenant_id>; let c = <start.connections>;
 if (typeof c === 'string' && c.trim()) { try { c = JSON.parse(c); } catch (e) { throw new Error('CONNECTIONS_NOT_JSON'); } }
