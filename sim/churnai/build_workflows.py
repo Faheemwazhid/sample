@@ -117,9 +117,14 @@ class Graph:
 def failure(g, x, y, stage_refs, extra=""):
     """Shared safe-failure function + 422 response."""
     stages = " : ".join(f"<{ref(n)}.error> ? '{s}'" for n, s in stage_refs) + " : 'unknown'"
+    errors = " || ".join(f"<{ref(n)}.error>" for n, _ in stage_refs)
+    # Expose only our own UPPER_CASE error codes (never raw gateway/DB text); bad input is not retryable.
     g.fn("Safe Failure", x, y,
          f"const stage = {stages};\n{extra}"
-         "return {body_json: JSON.stringify({status: 'failed', stage, retryable: true})};")
+         f"const raw = String({errors} || '');\n"
+         "const m = raw.match(/([A-Z][A-Z0-9_]{2,}(?::[a-z,]+)?)\\s*$/);\n"
+         "const error = m ? m[1] : null;\n"
+         "return {body_json: JSON.stringify({status: 'failed', stage, error, retryable: stage !== 'request_validation'})};")
     g.response("Return Failure", x + 360, y, "<safefailure.result.body_json>", 422)
     g.edge("Safe Failure", "Return Failure")
 
@@ -127,15 +132,20 @@ def failure(g, x, y, stage_refs, extra=""):
 # ---------------------------------------------------------------------------
 def connect():
     g = Graph("connect")
-    g.start([("tenant_id", "string", "Tenant id from the trusted backend."),
-             ("connections", "object", "{billing:{provider,connection_ref}, analytics:{...}, crm?:{...}, support?:{...}}. "
+    g.start([("tenant_id", "string", "Required. Tenant id from the trusted backend, e.g. acme_inc."),
+             ("connections", "object", "Required. One connector per source; billing + analytics mandatory, crm/support optional. "
+              'e.g. {"billing":{"provider":"stripe","connection_ref":"acme_stripe"},'
+              '"analytics":{"provider":"posthog","connection_ref":"acme_posthog"}}. '
+              "Billing: stripe|paddle|chargebee|dodo_payments. Analytics: amplitude|mixpanel|posthog. "
+              "CRM: hubspot|salesforce|pipedrive|attio. Support: zendesk|intercom|freshdesk|helpscout. "
               "connection_ref is an opaque id the connector gateway resolves from its secrets store; never a raw credential.")])
     g.fn("Validate Request", 360, 0, SAFE_ID + """
-const tenant = <start.tenant_id>, c = <start.connections>;
-const allowed = {billing: ['stripe','chargebee','recurly','paddle'], analytics: ['posthog','amplitude','mixpanel','segment','clickhouse'],
+const tenant = <start.tenant_id>; let c = <start.connections>;
+if (typeof c === 'string' && c.trim()) { try { c = JSON.parse(c); } catch (e) { throw new Error('CONNECTIONS_NOT_JSON'); } }
+const allowed = {billing: ['stripe','paddle','chargebee','dodo_payments'], analytics: ['amplitude','mixpanel','posthog'],
                  crm: ['hubspot','salesforce','pipedrive','attio'], support: ['zendesk','intercom','freshdesk','helpscout']};
 if (typeof tenant !== 'string' || !safeId.test(tenant)) throw new Error('TENANT_ID_INVALID');
-if (!c || typeof c !== 'object') throw new Error('CONNECTIONS_REQUIRED');
+if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('CONNECTIONS_REQUIRED');
 for (const req of ['billing','analytics']) if (!c[req]) throw new Error(req.toUpperCase() + '_CONNECTION_REQUIRED');
 const list = [];
 for (const [source, v] of Object.entries(c)) {
