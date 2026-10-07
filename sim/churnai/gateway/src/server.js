@@ -1,11 +1,15 @@
 // HTTP server: tenant REST API (/api/v1), MCP Streamable HTTP (/mcp),
-// admin tenant provisioning (/admin), and the connector-gateway endpoint the
-// Sim "Connect Sources" workflow calls (/v1/connections/test).
+// admin tenant provisioning (/admin), and the connector-gateway endpoints the Sim
+// workflows call (/v1/connections/test, /v1/sample, /v1/billing/*, /v1/enrich).
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { AppError } from './providers.js';
 import { TOOLS, gatewayTestConnections } from './tools.js';
 import { hashApiKey, newApiKey } from './vault.js';
+import { billingPage, createCache, enrich, sample } from './data.js';
+
+const GATEWAY_ROUTES = { '/v1/connections/test': gatewayTestConnections, '/v1/sample': sample,
+  '/v1/billing/customers': billingPage, '/v1/billing/changes': billingPage, '/v1/enrich': enrich };
 
 const MCP_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY = 256 * 1024;
@@ -125,6 +129,7 @@ async function handleAdmin(ctx, req, res, path) {
 }
 
 export function createApp(ctx) {
+  ctx = { dataCache: createCache(), ...ctx };
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://local');
     const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -132,9 +137,9 @@ export function createApp(ctx) {
       if (path === '/healthz') return send(res, 200, { ok: true });
       if (path === '/mcp') return await handleMcp(ctx, req, res);
       if (path.startsWith('/admin/')) return await handleAdmin(ctx, req, res, path);
-      if (path === '/v1/connections/test' && req.method === 'POST') {
+      if (GATEWAY_ROUTES[path] && req.method === 'POST') {
         if (!ctx.gatewayKey || !safeEq(presentedKey(req), ctx.gatewayKey)) throw new AppError('UNAUTHENTICATED', 'Gateway key required.', 401);
-        return send(res, 200, await gatewayTestConnections(ctx, await readJson(req)));
+        return send(res, 200, await GATEWAY_ROUTES[path](ctx, await readJson(req)));
       }
       if (path === '/api/v1/tools' && req.method === 'GET')
         return send(res, 200, { tools: TOOLS.map((t) => ({ name: t.name, method: t.rest[0], path: t.rest[1], description: t.description, input_schema: t.inputSchema })) });

@@ -51,8 +51,29 @@ npm test                           # end-to-end tests on in-memory Postgres
 ```
 
 The Sim workflows must be **deployed** for the execute calls to work. Point Sim's
-`CHURNAI_CONNECTOR_BASE_URL` at this service: it serves `POST /v1/connections/test` for workflow 1.
-The data endpoints the other workflows call (`/v1/sample`, `/v1/billing/*`, `/v1/enrich`) are not implemented yet.
+`CHURNAI_CONNECTOR_BASE_URL` at this service.
+
+## Connector-gateway endpoints (called by Sim, `Authorization: Bearer $CHURNAI_CONNECTOR_API_KEY`)
+
+| Endpoint | Workflow | Returns |
+| --- | --- | --- |
+| `POST /v1/connections/test` | 1 · Connect | `{results:[{source, ok, error?}]}` |
+| `POST /v1/sample` `{tenant_id, connections, limit}` | 2 · Sample & Map | `{billing:[…], analytics:[…], crm:[…], support:[…]}`, up to 50 each. Source records that share a value with the billing sample come first, so link overlap can be measured. |
+| `POST /v1/billing/customers` `{tenant_id, connection, cursor, limit, statuses}` | 3 · Backfill | `{customers:[…], next_cursor, has_more}`: active, trialing and non-renewing only |
+| `POST /v1/billing/changes` | 3 · Incremental | Same billing page. `ingest_batch` re-scores only accounts whose content changed. |
+| `POST /v1/enrich` `{tenant_id, connections, mapping, link_values, window_end}` | 3 · Backfill | One record per link value per source. For example, all users of `globex.com` are rolled into summed `events_28d`, `events_prev_28d`, `active_users_28d`, and the latest `last_seen_at`. |
+
+Credentials are resolved from the tenant's own `connection_ref` (a ref from another tenant returns `404 CONNECTION_REF_UNKNOWN`)
+and are never returned. Records are flat. Billing records include `id, email, email_domain, name, status, plan, mrr` (monthly, in major units),
+`currency, trial_end, current_period_end, cancel_at_period_end, seats, created_at, metadata`. Analytics, CRM, and support records include
+`email`/`email_domain`, `domain`, and the normalized metric fields named in the mapping prompt.
+
+Analytics are pulled **in bulk** for the 56 days before `window_end`. PostHog uses one paged HogQL aggregate,
+Mixpanel uses a streamed raw export plus a batched profile lookup, and Amplitude uses one Export API zip per day. Each export is cached per
+(tenant, connection, window_end) for 2 hours, so all batches of one backfill job share a single export. CRM providers list companies
+(HubSpot, Salesforce with open-opportunity counts, Pipedrive, Attio). Support providers aggregate tickets per requester over 28 days
+(Zendesk incremental export, Intercom conversation search, Freshdesk, Help Scout). Provider 429 and 5xx responses are retried with backoff.
+Results are capped at 200k analytics users and 100k CRM or support records per tenant. Above those caps, the endpoints return `SOURCE_TOO_LARGE`.
 
 ## Provision a customer (from your app's backend)
 
